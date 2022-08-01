@@ -71,6 +71,14 @@ public class TunerServiceImpl extends TunerService {
             Settings.Secure.DOZE_ALWAYS_ON,
             Settings.Secure.MEDIA_CONTROLS_RESUME,
             Settings.Secure.MEDIA_CONTROLS_RECOMMENDATION,
+			Clock.STATUS_BAR_CLOCK_SECONDS,
+            Clock.STATUS_BAR_CLOCK_DATE_DISPLAY,
+            Clock.STATUS_BAR_CLOCK_DATE_STYLE,
+            Clock.STATUS_BAR_CLOCK_DATE_POSITION,
+            Clock.STATUS_BAR_CLOCK_DATE_FORMAT,
+            Clock.STATUS_BAR_CLOCK_AUTO_HIDE,
+            Clock.STATUS_BAR_CLOCK_AUTO_HIDE_HDURATION,
+            Clock.STATUS_BAR_CLOCK_AUTO_HIDE_SDURATION,
             VolumeDialogImpl.VOLUME_PANEL_ON_LEFT
     };
 
