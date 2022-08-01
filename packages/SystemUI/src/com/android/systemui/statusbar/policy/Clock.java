@@ -69,6 +69,23 @@ public class Clock extends TextView implements
         CommandQueue.Callbacks,
         DarkReceiver, ConfigurationListener {
 
+    public static final String STATUS_BAR_CLOCK_SECONDS = "system:status_bar_clock_seconds";
+    private static final String STATUS_BAR_AM_PM = "system:status_bar_am_pm";
+    public static final String STATUS_BAR_CLOCK_DATE_DISPLAY =
+            "system:" + Settings.System.STATUS_BAR_CLOCK_DATE_DISPLAY;
+    public static final String STATUS_BAR_CLOCK_DATE_STYLE =
+            "system:" + Settings.System.STATUS_BAR_CLOCK_DATE_STYLE;
+    public static final String STATUS_BAR_CLOCK_DATE_POSITION =
+            "system:" + Settings.System.STATUS_BAR_CLOCK_DATE_POSITION;
+    public static final String STATUS_BAR_CLOCK_DATE_FORMAT =
+            "system:" + Settings.System.STATUS_BAR_CLOCK_DATE_FORMAT;
+    public static final String STATUS_BAR_CLOCK_AUTO_HIDE =
+            "system:" + Settings.System.STATUS_BAR_CLOCK_AUTO_HIDE;
+    public static final String STATUS_BAR_CLOCK_AUTO_HIDE_HDURATION =
+            "system:" + Settings.System.STATUS_BAR_CLOCK_AUTO_HIDE_HDURATION;
+    public static final String STATUS_BAR_CLOCK_AUTO_HIDE_SDURATION =
+            "system:" + Settings.System.STATUS_BAR_CLOCK_AUTO_HIDE_SDURATION;
+
     private static final String CLOCK_SUPER_PARCELABLE = "clock_super_parcelable";
     private static final String CURRENT_USER_ID = "current_user_id";
     private static final String VISIBLE_BY_POLICY = "visible_by_policy";
@@ -91,6 +108,8 @@ public class Clock extends TextView implements
     protected SimpleDateFormat mClockFormat;
     private SimpleDateFormat mContentDescriptionFormat;
     protected Locale mLocale;
+	private boolean mScreenOn = true;
+    private Handler autoHideHandler = new Handler();
 
     public static final int AM_PM_STYLE_GONE    = 0;
     public static final int AM_PM_STYLE_SMALL   = 1;
@@ -111,6 +130,8 @@ public class Clock extends TextView implements
     public static final int STYLE_CLOCK_RIGHT  = 2;
     public static final int STYLE_DATE_LEFT = 0;
     public static final int STYLE_DATE_RIGHT = 1;
+	private static final int HIDE_DURATION = 60; // 1 minute
+    private static final int SHOW_DURATION = 5; // 5 seconds
 
     protected int mClockDateDisplay = CLOCK_DATE_DISPLAY_GONE;
     protected int mClockDateStyle = CLOCK_DATE_STYLE_REGULAR;
@@ -123,6 +144,8 @@ public class Clock extends TextView implements
     private boolean mShowSeconds;
     private Handler mSecondsHandler;
     private SettingsObserver mSettingsObserver;
+	private boolean mClockAutoHide;
+    private int mHideDuration = HIDE_DURATION, mShowDuration = SHOW_DURATION;
 
     /**
      * Color to be set on this {@link TextView}, when wallpaperTextColor is <b>not</b> utilized.
@@ -245,12 +268,28 @@ public class Clock extends TextView implements
             filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
             filter.addAction(Intent.ACTION_CONFIGURATION_CHANGED);
             filter.addAction(Intent.ACTION_USER_SWITCHED);
+			filter.addAction(Intent.ACTION_SCREEN_ON);
+            filter.addAction(Intent.ACTION_SCREEN_OFF);
 
             // NOTE: This receiver could run before this method returns, as it's not dispatching
             // on the main thread and BroadcastDispatcher may not need to register with Context.
             // The receiver will return immediately if the view does not have a Handler yet.
             mBroadcastDispatcher.registerReceiverWithHandler(mIntentReceiver, filter,
                     Dependency.get(Dependency.TIME_TICK_HANDLER), UserHandle.ALL);
+			Dependency.get(TunerService.class).addTunable(this,
+                    STATUS_BAR_CLOCK_SECONDS,
+                    STATUS_BAR_AM_PM,
+                    STATUS_BAR_CLOCK_DATE_DISPLAY,
+                    STATUS_BAR_CLOCK_DATE_STYLE,
+                    STATUS_BAR_CLOCK_DATE_POSITION,
+                    STATUS_BAR_CLOCK_DATE_FORMAT,
+                    STATUS_BAR_CLOCK_AUTO_HIDE,
+                    STATUS_BAR_CLOCK_AUTO_HIDE_HDURATION,
+                    STATUS_BAR_CLOCK_AUTO_HIDE_SDURATION);
+            mCommandQueue.addCallback(this);
+            if (mShowDark) {
+                Dependency.get(DarkIconDispatcher.class).addDarkReceiver(this);
+            }
             mCommandQueue.addCallback(this);
             mCurrentUserTracker.startTracking();
             mCurrentUserId = mCurrentUserTracker.getCurrentUserId();
@@ -312,11 +351,21 @@ public class Clock extends TextView implements
                     if (!newLocale.equals(mLocale)) {
                         mLocale = newLocale;
                     }
-                    updateSettings();
+                    mClockFormatString = ""; // force refresh
+                    updateClockVisibility();
+                    updateShowSeconds();
+                    updateClock();
                     return;
                 });
+            } else if (action.equals(Intent.ACTION_SCREEN_ON)) {
+                mScreenOn = true;
+            } else if (action.equals(Intent.ACTION_SCREEN_OFF)) {
+                mScreenOn = false;
             }
-            handler.post(() -> updateClock());
+            if (mScreenOn) {
+                handler.post(() -> updateClock());
+                if (mClockAutoHide) autoHideHandler.post(() -> updateClockVisibility());
+            }
         }
     };
 
@@ -346,10 +395,22 @@ public class Clock extends TextView implements
     }
 
     protected void updateClockVisibility() {
-        boolean visible = ((mClockStyle == STYLE_CLOCK_LEFT) || (mQsHeader))
-                && mShowClock && mClockVisibleByPolicy && mClockVisibleByUser;
+        boolean visible = mClockVisibleByPolicy && mClockVisibleByUser;
         int visibility = visible ? View.VISIBLE : View.GONE;
-        super.setVisibility(visibility);
+        try {
+            autoHideHandler.removeCallbacksAndMessages(null);
+        } catch (NullPointerException e) {
+            // Do nothing
+        }
+        setVisibility(visibility);
+        if (mClockAutoHide && visible && mScreenOn) {
+            autoHideHandler.postDelayed(()->autoHideClock(), mShowDuration * 1000);
+        }
+    }
+
+    private void autoHideClock() {
+        setVisibility(View.GONE);
+        autoHideHandler.postDelayed(()->updateClockVisibility(), mHideDuration * 1000);
     }
 
     public boolean isClockVisible() {
@@ -366,6 +427,49 @@ public class Clock extends TextView implements
         setText(getSmallTime());
         setContentDescription(mContentDescriptionFormat.format(mCalendar.getTime()));
     }
+
+    @Override
+    public void onTuningChanged(String key, String newValue) {
+        switch (key) {
+            case STATUS_BAR_CLOCK_SECONDS:
+                mShowSeconds =
+                        TunerService.parseIntegerSwitch(newValue, false);
+                updateShowSeconds();
+                break;
+            case STATUS_BAR_AM_PM:
+                mAmPmStyle =
+                        TunerService.parseInteger(newValue, AM_PM_STYLE_GONE);
+                break;
+            case STATUS_BAR_CLOCK_DATE_DISPLAY:
+                mClockDateDisplay =
+                        TunerService.parseInteger(newValue, CLOCK_DATE_DISPLAY_GONE);
+                break;
+            case STATUS_BAR_CLOCK_DATE_STYLE:
+                mClockDateStyle =
+                        TunerService.parseInteger(newValue, CLOCK_DATE_STYLE_REGULAR);
+                break;
+            case STATUS_BAR_CLOCK_DATE_POSITION:
+                mClockDatePosition =
+                        TunerService.parseInteger(newValue, STYLE_DATE_LEFT);
+                break;
+            case STATUS_BAR_CLOCK_DATE_FORMAT:
+                mClockDateFormat = newValue;
+                break;
+            case STATUS_BAR_CLOCK_AUTO_HIDE:
+                mClockAutoHide =
+                        TunerService.parseIntegerSwitch(newValue, false);
+                break;
+            case STATUS_BAR_CLOCK_AUTO_HIDE_HDURATION:
+                mHideDuration =
+                        TunerService.parseInteger(newValue, HIDE_DURATION);
+                break;
+            case STATUS_BAR_CLOCK_AUTO_HIDE_SDURATION:
+                mShowDuration =
+                        TunerService.parseInteger(newValue, SHOW_DURATION);
+                break;
+            default:
+                break;
+        }
 
     @Override
     public void disable(int displayId, int state1, int state2, boolean animate) {
